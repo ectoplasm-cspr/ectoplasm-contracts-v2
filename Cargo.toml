@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "contracts/cep18-token",
+    "contracts/ecto-token",
+    "contracts/usdc-token",
+    "contracts/weth-token",
+    "contracts/wbtc-token",
+    "contracts/factory",
+    "contracts/router",
+    "contracts/pair",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+casper-contract = "4.0.0"
+casper-types = "4.0.1"
+
+[profile.release]
+codegen-units = 1
+lto = true
