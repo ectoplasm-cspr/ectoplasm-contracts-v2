@@ -10,10 +10,11 @@ use casper_contract::{
     unwrap_or_revert::UnwrapOrRevert,
 };
 use casper_types::{
+    addressable_entity::{EntityEntryPoint as EntryPoint, EntryPoints},
     bytesrepr::{FromBytes, ToBytes},
     contracts::NamedKeys,
-    CLType, CLTyped, CLValue, EntryPoint, EntryPointAccess, EntryPointType,
-    EntryPoints, Key, Parameter, URef, U256,
+    runtime_args, CLType, CLTyped, CLValue, EntryPointAccess, EntryPointPayment,
+    EntryPointType, Key, Parameter, RuntimeArgs, URef, U256,
 };
 
 // Storage keys
@@ -34,6 +35,8 @@ const TOKEN_DECIMALS: u8 = 18;
 const ERROR_INSUFFICIENT_BALANCE: u16 = 1;
 const ERROR_INSUFFICIENT_ALLOWANCE: u16 = 2;
 const ERROR_UNAUTHORIZED: u16 = 3;
+const ERROR_ALREADY_INITIALIZED: u16 = 4;
+const ERROR_FAILED_TO_CREATE_DICTIONARY: u16 = 5;
 
 // ============ Helper Functions ============
 
@@ -49,11 +52,6 @@ fn write_to_uref<T: CLTyped + ToBytes>(name: &str, value: T) {
     storage::write(uref, value);
 }
 
-fn get_dictionary_uref(name: &str) -> URef {
-    let key = runtime::get_key(name).unwrap_or_revert();
-    key.into_uref().unwrap_or_revert()
-}
-
 fn key_to_str(key: &Key) -> String {
     match key {
         Key::Account(account_hash) => {
@@ -62,7 +60,6 @@ fn key_to_str(key: &Key) -> String {
         }
         Key::Hash(hash) => hex_encode(hash),
         _ => {
-            // Fallback: use debug format
             let bytes = key.to_bytes().unwrap_or_revert();
             hex_encode(&bytes)
         }
@@ -93,31 +90,38 @@ fn allowance_key(owner: &Key, spender: &Key) -> String {
     key
 }
 
+fn get_dictionary_uref(name: &str) -> URef {
+    runtime::get_key(name)
+        .unwrap_or_revert()
+        .into_uref()
+        .unwrap_or_revert()
+}
+
 fn read_balance(owner: &Key) -> U256 {
-    let dict_uref = get_dictionary_uref(BALANCES);
     let key = key_to_str(owner);
+    let dict_uref = get_dictionary_uref(BALANCES);
     storage::dictionary_get(dict_uref, &key)
         .unwrap_or_default()
         .unwrap_or_default()
 }
 
 fn write_balance(owner: &Key, amount: U256) {
-    let dict_uref = get_dictionary_uref(BALANCES);
     let key = key_to_str(owner);
+    let dict_uref = get_dictionary_uref(BALANCES);
     storage::dictionary_put(dict_uref, &key, amount);
 }
 
 fn read_allowance(owner: &Key, spender: &Key) -> U256 {
-    let dict_uref = get_dictionary_uref(ALLOWANCES);
     let key = allowance_key(owner, spender);
+    let dict_uref = get_dictionary_uref(ALLOWANCES);
     storage::dictionary_get(dict_uref, &key)
         .unwrap_or_default()
         .unwrap_or_default()
 }
 
 fn write_allowance(owner: &Key, spender: &Key, amount: U256) {
-    let dict_uref = get_dictionary_uref(ALLOWANCES);
     let key = allowance_key(owner, spender);
+    let dict_uref = get_dictionary_uref(ALLOWANCES);
     storage::dictionary_put(dict_uref, &key, amount);
 }
 
@@ -132,6 +136,26 @@ fn transfer_internal(sender: &Key, recipient: &Key, amount: U256) {
 }
 
 // ============ Entry Points ============
+
+/// Initialize dictionaries and mint initial supply. Called after contract creation.
+#[no_mangle]
+pub extern "C" fn init() {
+    // Check if already initialized
+    if runtime::get_key(BALANCES).is_some() {
+        runtime::revert(casper_types::ApiError::User(ERROR_ALREADY_INITIALIZED));
+    }
+
+    // Create dictionaries in contract context
+    storage::new_dictionary(BALANCES)
+        .unwrap_or_revert_with(casper_types::ApiError::User(ERROR_FAILED_TO_CREATE_DICTIONARY));
+    storage::new_dictionary(ALLOWANCES)
+        .unwrap_or_revert_with(casper_types::ApiError::User(ERROR_FAILED_TO_CREATE_DICTIONARY));
+
+    // Mint initial supply to admin
+    let initial_supply: U256 = runtime::get_named_arg("initial_supply");
+    let admin: Key = runtime::get_named_arg("admin");
+    write_balance(&admin, initial_supply);
+}
 
 #[no_mangle]
 pub extern "C" fn name() {
@@ -253,34 +277,43 @@ fn get_entry_points() -> EntryPoints {
     let mut entry_points = EntryPoints::new();
 
     entry_points.add_entry_point(EntryPoint::new(
+        "init",
+        vec![
+            Parameter::new("initial_supply", CLType::U256),
+            Parameter::new("admin", CLType::Key),
+        ],
+        CLType::Unit,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
+    ));
+    entry_points.add_entry_point(EntryPoint::new(
         "name", vec![], CLType::String,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
     entry_points.add_entry_point(EntryPoint::new(
         "symbol", vec![], CLType::String,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
     entry_points.add_entry_point(EntryPoint::new(
         "decimals", vec![], CLType::U8,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
     entry_points.add_entry_point(EntryPoint::new(
         "total_supply", vec![], CLType::U256,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
     entry_points.add_entry_point(EntryPoint::new(
         "balance_of", vec![Parameter::new("owner", CLType::Key)], CLType::U256,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
     entry_points.add_entry_point(EntryPoint::new(
         "allowance",
         vec![Parameter::new("owner", CLType::Key), Parameter::new("spender", CLType::Key)],
-        CLType::U256, EntryPointAccess::Public, EntryPointType::Contract,
+        CLType::U256, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
     entry_points.add_entry_point(EntryPoint::new(
         "transfer",
         vec![Parameter::new("recipient", CLType::Key), Parameter::new("amount", CLType::U256)],
-        CLType::Unit, EntryPointAccess::Public, EntryPointType::Contract,
+        CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
     entry_points.add_entry_point(EntryPoint::new(
         "transfer_from",
@@ -289,22 +322,22 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("recipient", CLType::Key),
             Parameter::new("amount", CLType::U256),
         ],
-        CLType::Unit, EntryPointAccess::Public, EntryPointType::Contract,
+        CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
     entry_points.add_entry_point(EntryPoint::new(
         "approve",
         vec![Parameter::new("spender", CLType::Key), Parameter::new("amount", CLType::U256)],
-        CLType::Unit, EntryPointAccess::Public, EntryPointType::Contract,
+        CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
     entry_points.add_entry_point(EntryPoint::new(
         "mint",
         vec![Parameter::new("to", CLType::Key), Parameter::new("amount", CLType::U256)],
-        CLType::Unit, EntryPointAccess::Public, EntryPointType::Contract,
+        CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
     entry_points.add_entry_point(EntryPoint::new(
         "burn",
         vec![Parameter::new("from", CLType::Key), Parameter::new("amount", CLType::U256)],
-        CLType::Unit, EntryPointAccess::Public, EntryPointType::Contract,
+        CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     entry_points
@@ -312,7 +345,7 @@ fn get_entry_points() -> EntryPoints {
 
 #[no_mangle]
 pub extern "C" fn call() {
-    // Fixed token parameters
+    // Token parameters
     let name = String::from(TOKEN_NAME);
     let symbol = String::from(TOKEN_SYMBOL);
     let decimals: u8 = TOKEN_DECIMALS;
@@ -321,27 +354,13 @@ pub extern "C" fn call() {
 
     let mut named_keys = NamedKeys::new();
 
-    let name_uref = storage::new_uref(name);
-    named_keys.insert(NAME.to_string(), name_uref.into());
-
-    let symbol_uref = storage::new_uref(symbol);
-    named_keys.insert(SYMBOL.to_string(), symbol_uref.into());
-
-    let decimals_uref = storage::new_uref(decimals);
-    named_keys.insert(DECIMALS.to_string(), decimals_uref.into());
-
-    let total_supply_uref = storage::new_uref(initial_supply);
-    named_keys.insert(TOTAL_SUPPLY.to_string(), total_supply_uref.into());
+    named_keys.insert(NAME.to_string(), storage::new_uref(name).into());
+    named_keys.insert(SYMBOL.to_string(), storage::new_uref(symbol).into());
+    named_keys.insert(DECIMALS.to_string(), storage::new_uref(decimals).into());
+    named_keys.insert(TOTAL_SUPPLY.to_string(), storage::new_uref(initial_supply).into());
 
     let admin = Key::Account(runtime::get_caller());
-    let admin_uref = storage::new_uref(admin);
-    named_keys.insert(ADMIN.to_string(), admin_uref.into());
-
-    let balances_dict = storage::new_dictionary(BALANCES).unwrap_or_revert();
-    named_keys.insert(BALANCES.to_string(), balances_dict.into());
-
-    let allowances_dict = storage::new_dictionary(ALLOWANCES).unwrap_or_revert();
-    named_keys.insert(ALLOWANCES.to_string(), allowances_dict.into());
+    named_keys.insert(ADMIN.to_string(), storage::new_uref(admin).into());
 
     let entry_points = get_entry_points();
     let (contract_hash, _) = storage::new_contract(
@@ -349,11 +368,18 @@ pub extern "C" fn call() {
         Some(named_keys),
         Some("ecto_token_package".to_string()),
         Some("ecto_token_access".to_string()),
+        None,
     );
 
     runtime::put_key("ecto_token_contract", contract_hash.into());
 
-    // Mint initial supply to deployer
-    let balance_key = key_to_str(&admin);
-    storage::dictionary_put(balances_dict, &balance_key, initial_supply);
+    // Call init to create dictionaries and mint initial supply
+    runtime::call_contract::<()>(
+        contract_hash,
+        "init",
+        runtime_args! {
+            "initial_supply" => initial_supply,
+            "admin" => admin
+        },
+    );
 }

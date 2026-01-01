@@ -14,10 +14,10 @@ use casper_contract::{
     unwrap_or_revert::UnwrapOrRevert,
 };
 use casper_types::{
+    addressable_entity::{EntityEntryPoint as EntryPoint, EntryPoints},
     api_error::ApiError,
     contracts::NamedKeys,
-    CLType, CLValue, EntryPoint, EntryPointAccess, EntryPointType, EntryPoints,
-    Key, Parameter, RuntimeArgs, U256,
+    CLType, CLValue, EntryPointAccess, EntryPointPayment, EntryPointType, Key, Parameter, RuntimeArgs, U256,
 };
 
 use data::{
@@ -182,7 +182,8 @@ fn get_entry_points() -> EntryPoints {
         vec![],
         CLType::String,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
@@ -190,7 +191,8 @@ fn get_entry_points() -> EntryPoints {
         vec![],
         CLType::String,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
@@ -198,7 +200,8 @@ fn get_entry_points() -> EntryPoints {
         vec![],
         CLType::U8,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
@@ -206,7 +209,8 @@ fn get_entry_points() -> EntryPoints {
         vec![],
         CLType::U256,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
@@ -214,7 +218,8 @@ fn get_entry_points() -> EntryPoints {
         vec![Parameter::new("owner", CLType::Key)],
         CLType::U256,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
@@ -225,7 +230,8 @@ fn get_entry_points() -> EntryPoints {
         ],
         CLType::U256,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
     ));
 
     // State-changing functions
@@ -237,7 +243,8 @@ fn get_entry_points() -> EntryPoints {
         ],
         CLType::Unit,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
@@ -249,7 +256,8 @@ fn get_entry_points() -> EntryPoints {
         ],
         CLType::Unit,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
@@ -260,7 +268,8 @@ fn get_entry_points() -> EntryPoints {
         ],
         CLType::Unit,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
@@ -271,7 +280,8 @@ fn get_entry_points() -> EntryPoints {
         ],
         CLType::Unit,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
@@ -282,7 +292,8 @@ fn get_entry_points() -> EntryPoints {
         ],
         CLType::Unit,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
     ));
 
     entry_points
@@ -331,6 +342,7 @@ pub extern "C" fn call() {
         Some(named_keys),
         Some("cep18_token_package".to_string()),
         Some("cep18_token_access".to_string()),
+        None,
     );
 
     // Store contract hash in account's named keys

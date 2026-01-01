@@ -11,10 +11,11 @@ use casper_contract::{
     unwrap_or_revert::UnwrapOrRevert,
 };
 use casper_types::{
+    addressable_entity::{EntityEntryPoint as EntryPoint, EntryPoints},
     bytesrepr::{FromBytes, ToBytes},
     contracts::NamedKeys,
-    CLType, CLTyped, CLValue, EntryPoint, EntryPointAccess, EntryPointType,
-    EntryPoints, Key, Parameter, URef, U256,
+    runtime_args, AddressableEntityHash, CLType, CLTyped, CLValue, EntryPointAccess,
+    EntryPointPayment, EntryPointType, Key, Parameter, RuntimeArgs, URef,
 };
 
 // Storage keys
@@ -28,8 +29,9 @@ const ALL_PAIRS_LENGTH: &str = "all_pairs_length";
 const ERROR_UNAUTHORIZED: u16 = 1;
 const ERROR_PAIR_EXISTS: u16 = 2;
 const ERROR_IDENTICAL_ADDRESSES: u16 = 3;
-const ERROR_ZERO_ADDRESS: u16 = 4;
+const ERROR_ALREADY_INITIALIZED: u16 = 4;
 const ERROR_INDEX_OUT_OF_BOUNDS: u16 = 5;
+const ERROR_FAILED_TO_CREATE_DICTIONARY: u16 = 6;
 
 // ============ Helper Functions ============
 
@@ -43,11 +45,6 @@ fn write_to_uref<T: CLTyped + ToBytes>(name: &str, value: T) {
     let key = runtime::get_key(name).unwrap_or_revert();
     let uref = key.into_uref().unwrap_or_revert();
     storage::write(uref, value);
-}
-
-fn get_dictionary_uref(name: &str) -> URef {
-    let key = runtime::get_key(name).unwrap_or_revert();
-    key.into_uref().unwrap_or_revert()
 }
 
 fn key_to_str(key: &Key) -> String {
@@ -75,23 +72,39 @@ fn hex_char(nibble: u8) -> char {
     }
 }
 
-/// Create pair key from two tokens (sorted)
-fn pair_key(token_a: &Key, token_b: &Key) -> String {
-    let key_a = key_to_str(token_a);
-    let key_b = key_to_str(token_b);
-
-    // Sort keys to ensure consistent ordering
-    if key_a < key_b {
-        let mut k = key_a;
-        k.push('_');
-        k.push_str(&key_b);
-        k
-    } else {
-        let mut k = key_b;
-        k.push('_');
-        k.push_str(&key_a);
-        k
+/// Get raw bytes from Key
+fn key_to_bytes(key: &Key) -> [u8; 32] {
+    let mut result = [0u8; 32];
+    match key {
+        Key::Account(account_hash) => {
+            let bytes = account_hash.as_bytes();
+            let len = bytes.len().min(32);
+            result[..len].copy_from_slice(&bytes[..len]);
+        }
+        Key::Hash(hash) => {
+            result = *hash;
+        }
+        _ => {
+            let bytes = key.to_bytes().unwrap_or_revert();
+            let len = bytes.len().min(32);
+            result[..len].copy_from_slice(&bytes[..len]);
+        }
     }
+    result
+}
+
+/// Create pair key from two tokens using XOR (order-independent, fixed 64 chars)
+fn pair_key(token_a: &Key, token_b: &Key) -> String {
+    let bytes_a = key_to_bytes(token_a);
+    let bytes_b = key_to_bytes(token_b);
+
+    // XOR produces order-independent result
+    let mut xored = [0u8; 32];
+    for i in 0..32 {
+        xored[i] = bytes_a[i] ^ bytes_b[i];
+    }
+
+    hex_encode(&xored)
 }
 
 /// Sort two tokens
@@ -106,23 +119,28 @@ fn sort_tokens(token_a: Key, token_b: Key) -> (Key, Key) {
     }
 }
 
+fn get_dictionary_uref(name: &str) -> URef {
+    runtime::get_key(name)
+        .unwrap_or_revert()
+        .into_uref()
+        .unwrap_or_revert()
+}
+
 fn read_pair(token_a: &Key, token_b: &Key) -> Option<Key> {
-    let dict_uref = get_dictionary_uref(PAIRS);
     let key = pair_key(token_a, token_b);
-    storage::dictionary_get(dict_uref, &key)
-        .unwrap_or_default()
+    let dict_uref = get_dictionary_uref(PAIRS);
+    storage::dictionary_get(dict_uref, &key).unwrap_or_default()
 }
 
 fn write_pair(token_a: &Key, token_b: &Key, pair: Key) {
-    let dict_uref = get_dictionary_uref(PAIRS);
     let key = pair_key(token_a, token_b);
+    let dict_uref = get_dictionary_uref(PAIRS);
     storage::dictionary_put(dict_uref, &key, pair);
 }
 
 fn read_all_pairs_at(index: u64) -> Option<Key> {
     let dict_uref = get_dictionary_uref(ALL_PAIRS);
-    storage::dictionary_get(dict_uref, &index.to_string())
-        .unwrap_or_default()
+    storage::dictionary_get(dict_uref, &index.to_string()).unwrap_or_default()
 }
 
 fn write_all_pairs_at(index: u64, pair: Key) {
@@ -131,6 +149,21 @@ fn write_all_pairs_at(index: u64, pair: Key) {
 }
 
 // ============ Entry Points ============
+
+/// Initialize dictionaries. Called after contract creation.
+#[no_mangle]
+pub extern "C" fn init() {
+    // Check if already initialized (PAIRS dictionary exists)
+    if runtime::get_key(PAIRS).is_some() {
+        runtime::revert(casper_types::ApiError::User(ERROR_ALREADY_INITIALIZED));
+    }
+
+    // Create dictionaries in contract context
+    storage::new_dictionary(PAIRS)
+        .unwrap_or_revert_with(casper_types::ApiError::User(ERROR_FAILED_TO_CREATE_DICTIONARY));
+    storage::new_dictionary(ALL_PAIRS)
+        .unwrap_or_revert_with(casper_types::ApiError::User(ERROR_FAILED_TO_CREATE_DICTIONARY));
+}
 
 #[no_mangle]
 pub extern "C" fn fee_to() {
@@ -235,18 +268,23 @@ fn get_entry_points() -> EntryPoints {
     let mut entry_points = EntryPoints::new();
 
     entry_points.add_entry_point(EntryPoint::new(
+        "init", vec![], CLType::Unit,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
+    ));
+
+    entry_points.add_entry_point(EntryPoint::new(
         "fee_to", vec![], CLType::Key,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
         "fee_to_setter", vec![], CLType::Key,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
         "all_pairs_length", vec![], CLType::U64,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
@@ -256,14 +294,14 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("token_b", CLType::Key),
         ],
         CLType::Option(Box::new(CLType::Key)),
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
         "all_pairs",
         vec![Parameter::new("index", CLType::U64)],
         CLType::Option(Box::new(CLType::Key)),
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
@@ -274,21 +312,21 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("pair", CLType::Key),
         ],
         CLType::Key,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
         "set_fee_to",
         vec![Parameter::new("fee_to", CLType::Key)],
         CLType::Unit,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     entry_points.add_entry_point(EntryPoint::new(
         "set_fee_to_setter",
         vec![Parameter::new("fee_to_setter", CLType::Key)],
         CLType::Unit,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     entry_points
@@ -305,19 +343,16 @@ pub extern "C" fn call() {
     named_keys.insert(FEE_TO_SETTER.to_string(), storage::new_uref(deployer).into());
     named_keys.insert(ALL_PAIRS_LENGTH.to_string(), storage::new_uref(0u64).into());
 
-    // Create dictionaries
-    let pairs_dict = storage::new_dictionary(PAIRS).unwrap_or_revert();
-    named_keys.insert(PAIRS.to_string(), pairs_dict.into());
-
-    let all_pairs_dict = storage::new_dictionary(ALL_PAIRS).unwrap_or_revert();
-    named_keys.insert(ALL_PAIRS.to_string(), all_pairs_dict.into());
-
     let (contract_hash, _) = storage::new_contract(
         get_entry_points(),
         Some(named_keys),
         Some("ectoplasm_factory_package".to_string()),
         Some("ectoplasm_factory_access".to_string()),
+        None,
     );
 
     runtime::put_key("ectoplasm_factory_contract", contract_hash.into());
+
+    // Call init to create dictionaries in contract context
+    runtime::call_contract::<()>(contract_hash, "init", runtime_args! {});
 }

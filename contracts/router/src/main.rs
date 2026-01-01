@@ -12,11 +12,11 @@ use casper_contract::{
     unwrap_or_revert::UnwrapOrRevert,
 };
 use casper_types::{
+    addressable_entity::{EntityEntryPoint as EntryPoint, EntryPoints},
     bytesrepr::{FromBytes, ToBytes},
-    contracts::NamedKeys,
+    contracts::{ContractHash, NamedKeys},
     runtime_args, RuntimeArgs,
-    CLType, CLTyped, CLValue, ContractHash, EntryPoint, EntryPointAccess, EntryPointType,
-    EntryPoints, Key, Parameter, U256,
+    CLType, CLTyped, CLValue, EntryPointAccess, EntryPointPayment, EntryPointType, Key, Parameter, U256,
 };
 
 // Storage keys
@@ -178,7 +178,7 @@ fn call_token_transfer_from(token: Key, owner: Key, recipient: Key, amount: U256
 // ============ Library Functions ============
 
 /// Given some asset amount and reserves, returns an equivalent amount of the other asset
-fn quote(amount_a: U256, reserve_a: U256, reserve_b: U256) -> U256 {
+fn quote_internal(amount_a: U256, reserve_a: U256, reserve_b: U256) -> U256 {
     if amount_a == U256::zero() || reserve_a == U256::zero() {
         return U256::zero();
     }
@@ -186,7 +186,7 @@ fn quote(amount_a: U256, reserve_a: U256, reserve_b: U256) -> U256 {
 }
 
 /// Given an input amount and reserves, returns the maximum output amount
-fn get_amount_out(amount_in: U256, reserve_in: U256, reserve_out: U256) -> U256 {
+fn get_amount_out_internal(amount_in: U256, reserve_in: U256, reserve_out: U256) -> U256 {
     if amount_in == U256::zero() || reserve_in == U256::zero() || reserve_out == U256::zero() {
         return U256::zero();
     }
@@ -197,7 +197,7 @@ fn get_amount_out(amount_in: U256, reserve_in: U256, reserve_out: U256) -> U256 
 }
 
 /// Given an output amount and reserves, returns the required input amount
-fn get_amount_in(amount_out: U256, reserve_in: U256, reserve_out: U256) -> U256 {
+fn get_amount_in_internal(amount_out: U256, reserve_in: U256, reserve_out: U256) -> U256 {
     if amount_out == U256::zero() || reserve_in == U256::zero() || reserve_out == U256::zero() {
         return U256::zero();
     }
@@ -237,14 +237,14 @@ fn calculate_liquidity_amounts(
         return (amount_a_desired, amount_b_desired);
     }
 
-    let amount_b_optimal = quote(amount_a_desired, reserve_a, reserve_b);
+    let amount_b_optimal = quote_internal(amount_a_desired, reserve_a, reserve_b);
     if amount_b_optimal <= amount_b_desired {
         if amount_b_optimal < amount_b_min {
             runtime::revert(casper_types::ApiError::User(ERROR_INSUFFICIENT_B_AMOUNT));
         }
         (amount_a_desired, amount_b_optimal)
     } else {
-        let amount_a_optimal = quote(amount_b_desired, reserve_b, reserve_a);
+        let amount_a_optimal = quote_internal(amount_b_desired, reserve_b, reserve_a);
         if amount_a_optimal > amount_a_desired {
             runtime::revert(casper_types::ApiError::User(ERROR_INSUFFICIENT_A_AMOUNT));
         }
@@ -264,29 +264,29 @@ pub extern "C" fn factory() {
 }
 
 #[no_mangle]
-pub extern "C" fn quote_ep() {
+pub extern "C" fn quote() {
     let amount_a: U256 = runtime::get_named_arg("amount_a");
     let reserve_a: U256 = runtime::get_named_arg("reserve_a");
     let reserve_b: U256 = runtime::get_named_arg("reserve_b");
-    let result = quote(amount_a, reserve_a, reserve_b);
+    let result = quote_internal(amount_a, reserve_a, reserve_b);
     runtime::ret(CLValue::from_t(result).unwrap_or_revert());
 }
 
 #[no_mangle]
-pub extern "C" fn get_amount_out_ep() {
+pub extern "C" fn get_amount_out() {
     let amount_in: U256 = runtime::get_named_arg("amount_in");
     let reserve_in: U256 = runtime::get_named_arg("reserve_in");
     let reserve_out: U256 = runtime::get_named_arg("reserve_out");
-    let result = get_amount_out(amount_in, reserve_in, reserve_out);
+    let result = get_amount_out_internal(amount_in, reserve_in, reserve_out);
     runtime::ret(CLValue::from_t(result).unwrap_or_revert());
 }
 
 #[no_mangle]
-pub extern "C" fn get_amount_in_ep() {
+pub extern "C" fn get_amount_in() {
     let amount_out: U256 = runtime::get_named_arg("amount_out");
     let reserve_in: U256 = runtime::get_named_arg("reserve_in");
     let reserve_out: U256 = runtime::get_named_arg("reserve_out");
-    let result = get_amount_in(amount_out, reserve_in, reserve_out);
+    let result = get_amount_in_internal(amount_out, reserve_in, reserve_out);
     runtime::ret(CLValue::from_t(result).unwrap_or_revert());
 }
 
@@ -303,7 +303,7 @@ pub extern "C" fn get_amounts_out() {
     let mut amounts = vec![amount_in];
     for i in 0..(path.len() - 1) {
         let (reserve_in, reserve_out) = get_reserves_sorted(factory, path[i], path[i + 1]);
-        amounts.push(get_amount_out(amounts[i], reserve_in, reserve_out));
+        amounts.push(get_amount_out_internal(amounts[i], reserve_in, reserve_out));
     }
 
     runtime::ret(CLValue::from_t(amounts).unwrap_or_revert());
@@ -324,7 +324,7 @@ pub extern "C" fn get_amounts_in() {
 
     for i in (1..path.len()).rev() {
         let (reserve_in, reserve_out) = get_reserves_sorted(factory, path[i - 1], path[i]);
-        amounts[i - 1] = get_amount_in(amounts[i], reserve_in, reserve_out);
+        amounts[i - 1] = get_amount_in_internal(amounts[i], reserve_in, reserve_out);
     }
 
     runtime::ret(CLValue::from_t(amounts).unwrap_or_revert());
@@ -433,7 +433,7 @@ pub extern "C" fn swap_exact_tokens_for_tokens() {
     let mut amounts = vec![amount_in];
     for i in 0..(path.len() - 1) {
         let (reserve_in, reserve_out) = get_reserves_sorted(factory, path[i], path[i + 1]);
-        amounts.push(get_amount_out(amounts[i], reserve_in, reserve_out));
+        amounts.push(get_amount_out_internal(amounts[i], reserve_in, reserve_out));
     }
 
     if amounts[amounts.len() - 1] < amount_out_min {
@@ -490,7 +490,7 @@ pub extern "C" fn swap_tokens_for_exact_tokens() {
 
     for i in (1..path.len()).rev() {
         let (reserve_in, reserve_out) = get_reserves_sorted(factory, path[i - 1], path[i]);
-        amounts[i - 1] = get_amount_in(amounts[i], reserve_in, reserve_out);
+        amounts[i - 1] = get_amount_in_internal(amounts[i], reserve_in, reserve_out);
     }
 
     if amounts[0] > amount_in_max {
@@ -532,7 +532,7 @@ pub extern "C" fn swap_tokens_for_exact_tokens() {
 fn get_entry_points() -> EntryPoints {
     let mut ep = EntryPoints::new();
 
-    ep.add_entry_point(EntryPoint::new("factory", vec![], CLType::Key, EntryPointAccess::Public, EntryPointType::Contract));
+    ep.add_entry_point(EntryPoint::new("factory", vec![], CLType::Key, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
 
     ep.add_entry_point(EntryPoint::new(
         "quote",
@@ -542,7 +542,7 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("reserve_b", CLType::U256),
         ],
         CLType::U256,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     ep.add_entry_point(EntryPoint::new(
@@ -553,7 +553,7 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("reserve_out", CLType::U256),
         ],
         CLType::U256,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     ep.add_entry_point(EntryPoint::new(
@@ -564,7 +564,7 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("reserve_out", CLType::U256),
         ],
         CLType::U256,
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     ep.add_entry_point(EntryPoint::new(
@@ -574,7 +574,7 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("path", CLType::List(Box::new(CLType::Key))),
         ],
         CLType::List(Box::new(CLType::U256)),
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     ep.add_entry_point(EntryPoint::new(
@@ -584,7 +584,7 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("path", CLType::List(Box::new(CLType::Key))),
         ],
         CLType::List(Box::new(CLType::U256)),
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     ep.add_entry_point(EntryPoint::new(
@@ -600,7 +600,7 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("deadline", CLType::U64),
         ],
         CLType::Tuple3([Box::new(CLType::U256), Box::new(CLType::U256), Box::new(CLType::U256)]),
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     ep.add_entry_point(EntryPoint::new(
@@ -615,7 +615,7 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("deadline", CLType::U64),
         ],
         CLType::Tuple2([Box::new(CLType::U256), Box::new(CLType::U256)]),
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     ep.add_entry_point(EntryPoint::new(
@@ -628,7 +628,7 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("deadline", CLType::U64),
         ],
         CLType::List(Box::new(CLType::U256)),
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     ep.add_entry_point(EntryPoint::new(
@@ -641,7 +641,7 @@ fn get_entry_points() -> EntryPoints {
             Parameter::new("deadline", CLType::U64),
         ],
         CLType::List(Box::new(CLType::U256)),
-        EntryPointAccess::Public, EntryPointType::Contract,
+        EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller,
     ));
 
     ep
@@ -659,6 +659,7 @@ pub extern "C" fn call() {
         Some(named_keys),
         Some("ectoplasm_router_package".to_string()),
         Some("ectoplasm_router_access".to_string()),
+        None,
     );
 
     runtime::put_key("ectoplasm_router_contract", contract_hash.into());

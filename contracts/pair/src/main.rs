@@ -11,11 +11,11 @@ use casper_contract::{
     unwrap_or_revert::UnwrapOrRevert,
 };
 use casper_types::{
+    addressable_entity::{EntityEntryPoint as EntryPoint, EntryPoints},
     bytesrepr::{FromBytes, ToBytes},
-    contracts::NamedKeys,
-    runtime_args, RuntimeArgs,
-    CLType, CLTyped, CLValue, ContractHash, EntryPoint, EntryPointAccess, EntryPointType,
-    EntryPoints, Key, Parameter, URef, U256,
+    contracts::{ContractHash, NamedKeys},
+    runtime_args, CLType, CLTyped, CLValue, EntryPointAccess, EntryPointPayment,
+    EntryPointType, Key, Parameter, URef, U256,
 };
 
 // Storage keys
@@ -53,6 +53,8 @@ const ERROR_INVALID_TO: u16 = 8;
 const ERROR_K: u16 = 9;
 const ERROR_LOCKED: u16 = 10;
 const ERROR_OVERFLOW: u16 = 11;
+const ERROR_ALREADY_INITIALIZED: u16 = 12;
+const ERROR_FAILED_TO_CREATE_DICTIONARY: u16 = 13;
 
 // ============ Helper Functions ============
 
@@ -66,11 +68,6 @@ fn write_to_uref<T: CLTyped + ToBytes>(name: &str, value: T) {
     let key = runtime::get_key(name).unwrap_or_revert();
     let uref = key.into_uref().unwrap_or_revert();
     storage::write(uref, value);
-}
-
-fn get_dictionary_uref(name: &str) -> URef {
-    let key = runtime::get_key(name).unwrap_or_revert();
-    key.into_uref().unwrap_or_revert()
 }
 
 fn key_to_str(key: &Key) -> String {
@@ -106,6 +103,13 @@ fn allowance_key(owner: &Key, spender: &Key) -> String {
 }
 
 // ============ LP Token Functions ============
+
+fn get_dictionary_uref(name: &str) -> URef {
+    runtime::get_key(name)
+        .unwrap_or_revert()
+        .into_uref()
+        .unwrap_or_revert()
+}
 
 fn read_lp_balance(owner: &Key) -> U256 {
     let dict_uref = get_dictionary_uref(LP_BALANCES);
@@ -173,7 +177,7 @@ fn unlock() {
 
 // ============ AMM Functions ============
 
-fn get_reserves() -> (U256, U256, u64) {
+fn get_reserves_internal() -> (U256, U256, u64) {
     let reserve0: U256 = read_from_uref(RESERVE0);
     let reserve1: U256 = read_from_uref(RESERVE1);
     let block_timestamp_last: u64 = read_from_uref(BLOCK_TIMESTAMP_LAST);
@@ -239,6 +243,23 @@ fn transfer_token(token: Key, recipient: Key, amount: U256) {
             "amount" => amount
         },
     );
+}
+
+// ============ Init Entry Point ============
+
+/// Initialize LP token dictionaries. Called after contract creation.
+#[no_mangle]
+pub extern "C" fn init() {
+    // Check if already initialized
+    if runtime::get_key(LP_BALANCES).is_some() {
+        runtime::revert(casper_types::ApiError::User(ERROR_ALREADY_INITIALIZED));
+    }
+
+    // Create dictionaries in contract context
+    storage::new_dictionary(LP_BALANCES)
+        .unwrap_or_revert_with(casper_types::ApiError::User(ERROR_FAILED_TO_CREATE_DICTIONARY));
+    storage::new_dictionary(LP_ALLOWANCES)
+        .unwrap_or_revert_with(casper_types::ApiError::User(ERROR_FAILED_TO_CREATE_DICTIONARY));
 }
 
 // ============ LP Token Entry Points ============
@@ -335,8 +356,8 @@ pub extern "C" fn factory() {
 }
 
 #[no_mangle]
-pub extern "C" fn get_reserves_ep() {
-    let (reserve0, reserve1, block_timestamp_last) = get_reserves();
+pub extern "C" fn get_reserves() {
+    let (reserve0, reserve1, block_timestamp_last) = get_reserves_internal();
     runtime::ret(CLValue::from_t((reserve0, reserve1, block_timestamp_last)).unwrap_or_revert());
 }
 
@@ -346,7 +367,7 @@ pub extern "C" fn mint() {
 
     let to: Key = runtime::get_named_arg("to");
 
-    let (reserve0, reserve1, _) = get_reserves();
+    let (reserve0, reserve1, _) = get_reserves_internal();
     let token0: Key = read_from_uref(TOKEN0);
     let token1: Key = read_from_uref(TOKEN1);
 
@@ -442,7 +463,7 @@ pub extern "C" fn swap() {
         runtime::revert(casper_types::ApiError::User(ERROR_INSUFFICIENT_OUTPUT_AMOUNT));
     }
 
-    let (reserve0, reserve1, _) = get_reserves();
+    let (reserve0, reserve1, _) = get_reserves_internal();
 
     if amount0_out >= reserve0 || amount1_out >= reserve1 {
         runtime::revert(casper_types::ApiError::User(ERROR_INSUFFICIENT_LIQUIDITY));
@@ -518,7 +539,7 @@ pub extern "C" fn skim() {
     let token1: Key = read_from_uref(TOKEN1);
     let self_key = runtime::get_key("ectoplasm_pair_contract").unwrap_or_revert();
 
-    let (reserve0, reserve1, _) = get_reserves();
+    let (reserve0, reserve1, _) = get_reserves_internal();
     let balance0 = get_token_balance(token0, self_key);
     let balance1 = get_token_balance(token1, self_key);
 
@@ -535,27 +556,30 @@ pub extern "C" fn skim() {
 fn get_entry_points() -> EntryPoints {
     let mut ep = EntryPoints::new();
 
+    // Init entry point
+    ep.add_entry_point(EntryPoint::new("init", vec![], CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+
     // LP Token entry points
-    ep.add_entry_point(EntryPoint::new("name", vec![], CLType::String, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("symbol", vec![], CLType::String, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("decimals", vec![], CLType::U8, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("total_supply", vec![], CLType::U256, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("balance_of", vec![Parameter::new("owner", CLType::Key)], CLType::U256, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("allowance", vec![Parameter::new("owner", CLType::Key), Parameter::new("spender", CLType::Key)], CLType::U256, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("transfer", vec![Parameter::new("recipient", CLType::Key), Parameter::new("amount", CLType::U256)], CLType::Unit, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("transfer_from", vec![Parameter::new("owner", CLType::Key), Parameter::new("recipient", CLType::Key), Parameter::new("amount", CLType::U256)], CLType::Unit, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("approve", vec![Parameter::new("spender", CLType::Key), Parameter::new("amount", CLType::U256)], CLType::Unit, EntryPointAccess::Public, EntryPointType::Contract));
+    ep.add_entry_point(EntryPoint::new("name", vec![], CLType::String, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("symbol", vec![], CLType::String, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("decimals", vec![], CLType::U8, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("total_supply", vec![], CLType::U256, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("balance_of", vec![Parameter::new("owner", CLType::Key)], CLType::U256, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("allowance", vec![Parameter::new("owner", CLType::Key), Parameter::new("spender", CLType::Key)], CLType::U256, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("transfer", vec![Parameter::new("recipient", CLType::Key), Parameter::new("amount", CLType::U256)], CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("transfer_from", vec![Parameter::new("owner", CLType::Key), Parameter::new("recipient", CLType::Key), Parameter::new("amount", CLType::U256)], CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("approve", vec![Parameter::new("spender", CLType::Key), Parameter::new("amount", CLType::U256)], CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
 
     // AMM entry points
-    ep.add_entry_point(EntryPoint::new("token0", vec![], CLType::Key, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("token1", vec![], CLType::Key, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("factory", vec![], CLType::Key, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("get_reserves", vec![], CLType::Tuple3([Box::new(CLType::U256), Box::new(CLType::U256), Box::new(CLType::U64)]), EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("mint", vec![Parameter::new("to", CLType::Key)], CLType::U256, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("burn", vec![Parameter::new("to", CLType::Key)], CLType::Tuple2([Box::new(CLType::U256), Box::new(CLType::U256)]), EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("swap", vec![Parameter::new("amount0_out", CLType::U256), Parameter::new("amount1_out", CLType::U256), Parameter::new("to", CLType::Key)], CLType::Unit, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("sync", vec![], CLType::Unit, EntryPointAccess::Public, EntryPointType::Contract));
-    ep.add_entry_point(EntryPoint::new("skim", vec![Parameter::new("to", CLType::Key)], CLType::Unit, EntryPointAccess::Public, EntryPointType::Contract));
+    ep.add_entry_point(EntryPoint::new("token0", vec![], CLType::Key, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("token1", vec![], CLType::Key, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("factory", vec![], CLType::Key, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("get_reserves", vec![], CLType::Tuple3([Box::new(CLType::U256), Box::new(CLType::U256), Box::new(CLType::U64)]), EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("mint", vec![Parameter::new("to", CLType::Key)], CLType::U256, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("burn", vec![Parameter::new("to", CLType::Key)], CLType::Tuple2([Box::new(CLType::U256), Box::new(CLType::U256)]), EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("swap", vec![Parameter::new("amount0_out", CLType::U256), Parameter::new("amount1_out", CLType::U256), Parameter::new("to", CLType::Key)], CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("sync", vec![], CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
+    ep.add_entry_point(EntryPoint::new("skim", vec![Parameter::new("to", CLType::Key)], CLType::Unit, EntryPointAccess::Public, EntryPointType::Called, EntryPointPayment::Caller));
 
     ep
 }
@@ -586,18 +610,16 @@ pub extern "C" fn call() {
     named_keys.insert(LP_DECIMALS.to_string(), storage::new_uref(18u8).into());
     named_keys.insert(LP_TOTAL_SUPPLY.to_string(), storage::new_uref(U256::zero()).into());
 
-    let balances_dict = storage::new_dictionary(LP_BALANCES).unwrap_or_revert();
-    named_keys.insert(LP_BALANCES.to_string(), balances_dict.into());
-
-    let allowances_dict = storage::new_dictionary(LP_ALLOWANCES).unwrap_or_revert();
-    named_keys.insert(LP_ALLOWANCES.to_string(), allowances_dict.into());
-
     let (contract_hash, _) = storage::new_contract(
         get_entry_points(),
         Some(named_keys),
         Some("ectoplasm_pair_package".to_string()),
         Some("ectoplasm_pair_access".to_string()),
+        None,
     );
 
     runtime::put_key("ectoplasm_pair_contract", contract_hash.into());
+
+    // Call init to create dictionaries in contract context
+    runtime::call_contract::<()>(contract_hash, "init", runtime_args! {});
 }
