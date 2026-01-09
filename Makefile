@@ -1,6 +1,6 @@
 .PHONY: all build clean prepare test
 
-CONTRACTS = cep18-token ecto-token usdc-token weth-token wbtc-token factory router pair
+CONTRACTS = cep18-token ecto-token usdc-token weth-token wbtc-token factory router pair launchpad-controller bonding-curve token-factory
 TARGET = wasm32-unknown-unknown
 
 all: build
