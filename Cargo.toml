@@ -9,6 +9,9 @@ members = [
     "contracts/router",
     "contracts/pair",
     "contracts/test-minimal",
+    "contracts/launchpad-controller",
+    "contracts/bonding-curve",
+    "contracts/token-factory",
 ]
 resolver = "2"
 

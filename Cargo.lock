@@ -59,6 +59,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bonding-curve"
+version = "1.0.0"
+dependencies = [
+ "casper-contract",
+ "casper-types",
+]
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -419,6 +427,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "launchpad-controller"
+version = "1.0.0"
+dependencies = [
+ "casper-contract",
+ "casper-types",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.178"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -748,6 +764,14 @@ dependencies = [
 
 [[package]]
 name = "test-minimal"
+version = "1.0.0"
+dependencies = [
+ "casper-contract",
+ "casper-types",
+]
+
+[[package]]
+name = "token-factory"
 version = "1.0.0"
 dependencies = [
  "casper-contract",

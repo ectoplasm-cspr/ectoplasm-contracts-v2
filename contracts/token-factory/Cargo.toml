@@ -1,0 +1,13 @@
+[package]
+name = "token-factory"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "token-factory"
+path = "src/main.rs"
+
+[dependencies]
+casper-contract.workspace = true
+casper-types.workspace = true
