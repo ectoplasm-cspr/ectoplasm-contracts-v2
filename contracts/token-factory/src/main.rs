@@ -24,6 +24,7 @@ use casper_types::{
 const CONTROLLER: &str = "controller";
 const PLATFORM_WALLET: &str = "platform_wallet";
 const LAUNCHES: &str = "launches";
+const LAUNCHES_META: &str = "launches_meta";
 const TOKEN_TO_LAUNCH: &str = "token_to_launch";
 const LAUNCH_COUNT: &str = "launch_count";
 const INITIALIZED: &str = "initialized";
@@ -114,6 +115,8 @@ pub extern "C" fn init() {
     // Create dictionaries
     storage::new_dictionary(LAUNCHES)
         .unwrap_or_revert_with(casper_types::ApiError::User(ERROR_FAILED_TO_CREATE_DICTIONARY));
+    storage::new_dictionary(LAUNCHES_META)
+        .unwrap_or_revert_with(casper_types::ApiError::User(ERROR_FAILED_TO_CREATE_DICTIONARY));
     storage::new_dictionary(TOKEN_TO_LAUNCH)
         .unwrap_or_revert_with(casper_types::ApiError::User(ERROR_FAILED_TO_CREATE_DICTIONARY));
 
@@ -135,8 +138,7 @@ pub extern "C" fn launch_count() {
 }
 
 /// Get launch info by ID
-/// Returns nested tuples: ((token_hash, curve_hash, creator), (curve_type, status, created_at))
-/// Note: name and symbol stored separately in launches_meta dictionary
+/// Returns tuple: (token_hash, curve_hash, creator)
 #[no_mangle]
 pub extern "C" fn get_launch() {
     let launch_id: u64 = runtime::get_named_arg("launch_id");
@@ -154,6 +156,27 @@ pub extern "C" fn get_launch() {
         storage::dictionary_get(launches_uref, &launch_key).unwrap_or_default();
 
     runtime::ret(CLValue::from_t(core_data).unwrap_or_revert());
+}
+
+/// Get launch metadata by ID
+/// Returns nested tuple: (name, symbol, (curve_type, status, created_at))
+#[no_mangle]
+pub extern "C" fn get_launch_meta() {
+    let launch_id: u64 = runtime::get_named_arg("launch_id");
+    let count: u64 = read_from_uref(LAUNCH_COUNT);
+
+    if launch_id >= count {
+        runtime::revert(casper_types::ApiError::User(ERROR_INDEX_OUT_OF_BOUNDS));
+    }
+
+    let meta_uref = get_dictionary_uref(LAUNCHES_META);
+    let launch_key = launch_id.to_string();
+
+    // Metadata: (name, symbol, (curve_type, status, created_at))
+    let meta_data: Option<(String, String, (u8, u8, u64))> =
+        storage::dictionary_get(meta_uref, &launch_key).unwrap_or_default();
+
+    runtime::ret(CLValue::from_t(meta_data).unwrap_or_revert());
 }
 
 /// Get launch ID by token hash
@@ -270,6 +293,11 @@ pub extern "C" fn create_launch() {
     let launch_data = (token_placeholder, curve_placeholder, creator);
     storage::dictionary_put(launches_uref, &launch_id.to_string(), launch_data);
 
+    // Store launch metadata (name, symbol, (curve_type, status, created_at))
+    let meta_uref = get_dictionary_uref(LAUNCHES_META);
+    let meta_data = (name, symbol, (curve_type, STATUS_ACTIVE, current_time));
+    storage::dictionary_put(meta_uref, &launch_id.to_string(), meta_data);
+
     // Map token to launch
     let token_to_launch_uref = get_dictionary_uref(TOKEN_TO_LAUNCH);
     let token_key = key_to_str(&token_placeholder);
@@ -341,6 +369,24 @@ fn get_entry_points() -> EntryPoints {
             Box::new(CLType::Key),
             Box::new(CLType::Key),
             Box::new(CLType::Key),
+        ]))),
+        EntryPointAccess::Public,
+        EntryPointType::Called,
+        EntryPointPayment::Caller,
+    ));
+
+    // get_launch_meta returns (name, symbol, curve_type, status, created_at)
+    entry_points.add_entry_point(EntryPoint::new(
+        "get_launch_meta",
+        vec![Parameter::new("launch_id", CLType::U64)],
+        CLType::Option(Box::new(CLType::Tuple3([
+            Box::new(CLType::String),
+            Box::new(CLType::String),
+            Box::new(CLType::Tuple3([
+                Box::new(CLType::U8),
+                Box::new(CLType::U8),
+                Box::new(CLType::U64),
+            ])),
         ]))),
         EntryPointAccess::Public,
         EntryPointType::Called,
